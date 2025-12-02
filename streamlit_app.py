@@ -569,16 +569,19 @@ def perform_cohort_analysis(
         "tobacco",
         "gender",
     ]
+        # Terminated policy detail DF
     terminated_detail_df = df_cohort[df_cohort["Lapsed"] == 1].copy()
+    # Keep the keys we need later (including policy_nbr so we can rejoin to full detail)
     terminated_detail_df = terminated_detail_df[
-        ["Cohort_Week_Index", "Lapse_Week", "Policy_Month", "Termination_Reason"]
-        + [
-            col
-            for col in policy_detail_cols
-            if col in terminated_detail_df.columns
-            and col not in ["policy_nbr", "issue_date", "term_date"]
+        [
+            "Cohort_Week_Index",
+            "Lapse_Week",
+            "Policy_Month",
+            "Termination_Reason",
+            "policy_nbr",
         ]
     ].copy()
+
 
     return (
         retention_rate,
