@@ -1186,48 +1186,52 @@ try:
             )
             st.markdown("---")
 
-            # TERMINATED POLICY DETAIL TABLE
-            st.header("📝 Detailed List of Terminated Policies (Reference Data)")
-            detail_table_df = terminated_detail_df[
-                terminated_detail_df["Cohort_Week_Index"] == selected_cohort_index
+                    # TERMINATED POLICY DETAIL TABLE (Simplified to use terminated_detail_df correctly)
+        st.header("📝 Detailed List of Terminated Policies (Reference Data)")
+
+        # 1) Start from terminated_detail_df for this cohort
+        detail_table_df = terminated_detail_df[
+            terminated_detail_df["Cohort_Week_Index"] == selected_cohort_index
+        ].copy()
+
+        if detail_table_df.empty:
+            st.info("No terminated policies found for the selected cohort.")
+        else:
+            # 2) Get full policy details from the original initial_df
+            detail_policy_nrs = detail_table_df["policy_nbr"].unique()
+            full_detail_df = initial_df[
+                initial_df["policy_nbr"].isin(detail_policy_nrs)
             ].copy()
 
-            detail_policy_nrs = detail_table_df["policy_nbr"].unique()
-            full_detail_df = initial_df[initial_df["policy_nbr"].isin(detail_policy_nrs)].copy()
+            # 3) Merge the termination info back onto the full policy detail
+            detail_table_df = full_detail_df.merge(
+                detail_table_df[
+                    ["policy_nbr", "Termination_Reason", "Lapse_Week", "Policy_Month"]
+                ],
+                on="policy_nbr",
+                how="left",
+            )
 
-            merge_cols = [
-                "policy_nbr",
-                "term_date",
-                "issue_date",
-                "plan_code",
-                "tobacco",
-                "gender",
-                "Termination_Reason",
-                "Lapse_Week",
-                "Policy_Month",
-            ]
-            detail_table_df = full_detail_df[merge_cols].dropna(
-                subset=["term_date"]
-            ).copy()
-
+            # 4) Format dates safely
             if "term_date" in detail_table_df.columns and pd.api.types.is_datetime64_any_dtype(
                 detail_table_df["term_date"]
             ):
-                detail_table_df["Terminated_Date"] = detail_table_df["term_date"].dt.strftime(
-                    "%Y-%m-%d"
-                ).fillna("N/A")
+                detail_table_df["Terminated_Date"] = (
+                    detail_table_df["term_date"].dt.strftime("%Y-%m-%d").fillna("N/A")
+                )
             else:
                 detail_table_df["Terminated_Date"] = "N/A"
 
             if "issue_date" in detail_table_df.columns and pd.api.types.is_datetime64_any_dtype(
                 detail_table_df["issue_date"]
             ):
-                detail_table_df["Issue_Date"] = detail_table_df["issue_date"].dt.strftime(
-                    "%Y-%m-%d"
-                ).fillna("N/A")
+                detail_table_df["Issue_Date"] = (
+                    detail_table_df["issue_date"].dt.strftime("%Y-%m-%d").fillna("N/A")
+                )
             else:
                 detail_table_df["Issue_Date"] = "N/A"
 
+            # 5) Select display columns
             display_cols = [
                 "policy_nbr",
                 "Terminated_Date",
@@ -1248,6 +1252,7 @@ try:
                 key="terminated_policies_detail",
             )
             st.markdown("---")
+
 
             # --- REFERENCE DATA FOR SINGLE COHORT ---
             st.subheader("Reference Data: Active Policy Mix Over Tenure")
