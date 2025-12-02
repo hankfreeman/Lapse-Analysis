@@ -78,7 +78,6 @@ uw_class_mapping: Dict[str, str] = {
 MAPPING_PLAN_CODES = list(uw_class_mapping.keys())
 
 # Reason Definitions
-# REASON_MAP is kept as it's used in assign_termination_reason which helps determine the 'Lapsed' status detail
 REASON_MAP = {
     r"(?i)Check Returned": "Check Returned",
     r"(?i)NSF \(OTHER|NSF": "NSF",
@@ -161,7 +160,7 @@ def load_and_merge_data(
         engine="python",
     )
 
-    # Normalize column names - This handles the 'Issue Date' -> 'issue_date' and 'Term Date' -> 'term_date' transformation.
+    # Normalize column names - handles e.g. 'Issue Date' -> 'issue_date'
     df_policies.columns = (
         df_policies.columns.str.strip()
         .str.replace(r"[^\w\s]", "", regex=True)
@@ -184,21 +183,18 @@ def load_and_merge_data(
         [col for col in context_cols_to_keep if col in df_policies.columns]
     ]
 
-    # --- FIX 1 & 4: Robust Date Parsing ---
+    # --- Robust Date Parsing ---
     date_cols_to_parse = ["app_recvd_date", "issue_date", "term_date"]
     earliest_date = pd.NaT
 
     for col in date_cols_to_parse:
         if col in df_policies.columns:
-            # FIX: Ensure dates are strings before parsing (handles numeric YYYYMMDD being read as int/float)
             df_policies[col] = (
                 df_policies[col]
                 .astype(str)
                 .str.strip()
                 .str.replace(r"\.0$", "", regex=True)
             )
-
-            # FIX: Use the correct format for YYYYMMDD
             df_policies[col] = pd.to_datetime(
                 df_policies[col], format="%Y%m%d", errors="coerce"
             )
@@ -206,8 +202,6 @@ def load_and_merge_data(
     # Compute earliest date
     if "app_recvd_date" in df_policies.columns:
         earliest_date = df_policies["app_recvd_date"].min()
-
-    # --- End Date Parsing Fixes ---
 
     if "plan_code" in df_policies.columns:
         df_policies["plan_code"] = (
@@ -256,7 +250,7 @@ def calculate_initial_mixes(df_cohort: pd.DataFrame) -> pd.DataFrame:
                 .reset_index(name="Policy_Count")
             )
 
-            # Calculate total policies in each Cohort
+            # Total policies in each Cohort
             totals = (
                 df_cohort.groupby("Cohort_Week_Index")["policy_nbr"]
                 .nunique()
@@ -293,7 +287,7 @@ def calculate_average_months_held(
     df_calc["Held_End_Date"] = df_calc["term_date"].where(
         df_calc["Lapsed"] == 1, analysis_end_date
     )
-    # FIX: Ensure 'issue_date' is a datetime type before subtraction
+    # Ensure 'issue_date' is datetime
     if "issue_date" in df_calc.columns and pd.api.types.is_datetime64_any_dtype(
         df_calc["issue_date"]
     ):
@@ -301,7 +295,6 @@ def calculate_average_months_held(
             df_calc["Held_End_Date"] - df_calc["issue_date"]
         ).dt.days
     else:
-        # Fallback if issue_date is still problematic
         df_calc["Held_Duration_Days"] = 0
 
     # Convert days to months
@@ -309,23 +302,22 @@ def calculate_average_months_held(
         df_calc["Held_Duration_Days"] / 30.4375
     ).clip(lower=0)
 
-    # Define all grouping columns and filter for existence
+    # Grouping columns
     grouping_cols = ["Cohort_Week_Index", "underwriting_class", "gender", "tobacco"]
     available_cols = [col for col in grouping_cols if col in df_calc.columns]
 
     segment_data: List[Dict[str, Any]] = []
 
-    # Calculate Averages by Cohort and Segment
+    # Calculate averages by cohort and segment
     for cohort_index in df_calc["Cohort_Week_Index"].unique():
         df_cohort = df_calc[df_calc["Cohort_Week_Index"] == cohort_index]
-        # Use .get() with a default in case the index is somehow missing (safer)
         cohort_start_date = (
             cohort_dates_df.loc[cohort_index, "Cohort_Start_Date"]
             if cohort_index in cohort_dates_df.index
             else pd.NaT
         )
 
-        # 1. Cohort Overall Average
+        # Overall cohort average
         overall_avg = df_cohort["Months_Held"].mean()
         segment_data.append(
             {
@@ -338,7 +330,7 @@ def calculate_average_months_held(
             }
         )
 
-        # 2. Segment Averages within the Cohort
+        # Segment-level averages
         for col in available_cols:
             if col != "Cohort_Week_Index":
                 segment_avg = (
@@ -359,7 +351,6 @@ def calculate_average_months_held(
 def perform_cohort_analysis(
     df: pd.DataFrame,
     cohort_start_date: pd.Timestamp,
-    # The filter now accepts a generic list of selected plan codes
     selected_plans: List[str],
     selected_tobacco: List[str],
     selected_gender: List[str],
@@ -367,14 +358,12 @@ def perform_cohort_analysis(
 ) -> AnalysisResult:
     """
     Performs the full weekly cohort lapse analysis, now including Average Months Held and Mix calculation.
-    FIX: Removed redundant date parsing for issue_date/term_date since it's now handled robustly in load_and_merge_data.
     """
 
     df_filtered = df.copy()
 
-    # --- Data Cleaning and Filtering ---
+    # Required columns
     if "plan_code" not in df_filtered.columns or "policy_nbr" not in df_filtered.columns:
-        # Return the extended tuple with empty dataframes
         return (
             pd.DataFrame(),
             0,
@@ -386,27 +375,27 @@ def perform_cohort_analysis(
             pd.DataFrame(),
         )
 
-    # Apply the plan code filter immediately
+    # Plan filter
     if selected_plans:
         df_filtered = df_filtered[df_filtered["plan_code"].isin(selected_plans)].copy()
 
-    # Map to underwriting class *after* filtering (unmapped codes will result in NaN, which is fine)
+    # Underwriting class
     df_filtered["underwriting_class"] = df_filtered["plan_code"].map(uw_class_mapping)
 
-    # Date check: app_recvd_date should be a datetime from load_and_merge_data
+    # Ensure app_recvd_date is datetime
     if not pd.api.types.is_datetime64_any_dtype(df_filtered["app_recvd_date"]):
         df_filtered["app_recvd_date"] = pd.to_datetime(
             df_filtered["app_recvd_date"], errors="coerce"
         )
 
-    # --- Existing Filters (Plan code filter moved up) ---
+    # Tobacco and gender filters
     if selected_tobacco and "tobacco" in df_filtered.columns:
         df_filtered = df_filtered[df_filtered["tobacco"].isin(selected_tobacco)]
     if selected_gender and "gender" in df_filtered.columns:
         df_filtered = df_filtered[df_filtered["gender"].isin(selected_gender)]
 
+    # Cohort filter
     df_cohort = df_filtered[df_filtered["app_recvd_date"] >= cohort_start_date].copy()
-
     if df_cohort.empty:
         return (
             pd.DataFrame(),
@@ -426,13 +415,12 @@ def perform_cohort_analysis(
         "Cohort_Start_Date"
     )
 
-    # --- Lapse Status and Tenure Calculation ---
-    # FIX 3: Robust Lapsed Policy Check
+    # Lapse status
     df_cohort["Lapsed"] = (
         df_cohort["term_date"].notna() & (df_cohort["term_date"] <= ANALYSIS_END_DATE)
     ).astype(int)
 
-    # --- Apply the Case Status Filter ---
+    # Case status
     df_cohort["Case_Status"] = df_cohort["Lapsed"].apply(
         lambda x: "Inactive" if x == 1 else "Active"
     )
@@ -452,7 +440,7 @@ def perform_cohort_analysis(
             pd.DataFrame(),
         )
 
-    # Recalculate Lapsed status based on the *filtered* set (important for charts)
+    # Recompute Lapsed on filtered set
     df_cohort["Lapsed"] = (
         df_cohort["term_date"].notna() & (df_cohort["term_date"] <= ANALYSIS_END_DATE)
     ).astype(int)
@@ -461,7 +449,7 @@ def perform_cohort_analysis(
         df_cohort["Lapsed"] == 1, pd.NaT
     )
 
-    # Calculate Policy Month for cross-cohort analysis
+    # Policy month
     if "issue_date" in df_cohort.columns and pd.api.types.is_datetime64_any_dtype(
         df_cohort["issue_date"]
     ):
@@ -490,10 +478,10 @@ def perform_cohort_analysis(
     )
     max_overall_tenure_week = int(df_cohort["Tenure_Weeks"].max()) + 1
 
-    # --- ASSIGN TERMINATION REASONS ---
+    # Termination reasons
     df_cohort = assign_termination_reason(df_cohort)
 
-    # --- Cohort Lapse Matrix Calculation (for Retention Plot) ---
+    # Cohort lapse matrix
     cohort_sizes = df_cohort.groupby("Cohort_Week_Index")["policy_nbr"].nunique().rename(
         "Total_Policies"
     )
@@ -521,11 +509,11 @@ def perform_cohort_analysis(
     lapse_matrix = lapse_matrix.reindex(columns=all_lapse_weeks, fill_value=0)
     cumulative_lapses = lapse_matrix.cumsum(axis=1)
 
-    # Handle division by zero if a cohort has zero policies after filtering
+    # Retention matrix
     cumulative_lapse_rate = cumulative_lapses.div(cohort_sizes, axis=0) * 100
     retention_rate = 100 - cumulative_lapse_rate
 
-    # --- Dynamic Masking ---
+    # Dynamic masking
     retention_rate.columns = [f"Week_{int(w)}" for w in retention_rate.columns]
     max_cohort_tenure = df_cohort.groupby("Cohort_Week_Index")["Tenure_Weeks"].max()
     mask = pd.DataFrame(False, index=retention_rate.index, columns=retention_rate.columns)
@@ -536,7 +524,7 @@ def perform_cohort_analysis(
     retention_rate[mask] = np.nan
     retention_rate.index.name = "Cohort_Week_Index"
 
-    # --- Data Preparation for Plots/Tables & Persistency ---
+    # Mix DF
     mix_df = df_cohort[
         [
             "Cohort_Week_Index",
@@ -551,27 +539,17 @@ def perform_cohort_analysis(
         ]
     ].copy()
 
-    # CALCULATE AVERAGE MONTHS HELD
+    # Average months held
     cohort_dates_map = cohort_dates.to_frame()
     avg_months_held_df = calculate_average_months_held(
         df_cohort, ANALYSIS_END_DATE, cohort_dates_map
     )
 
-    # CALCULATE INITIAL MIXES
+    # Initial mixes
     initial_mix_df = calculate_initial_mixes(df_cohort)
 
-    # Terminated policy detail DF
-    policy_detail_cols = [
-        "policy_nbr",
-        "term_date",
-        "issue_date",
-        "plan_code",
-        "tobacco",
-        "gender",
-    ]
-        # Terminated policy detail DF
+    # Terminated policy detail DF (minimal set; re-join to full detail in UI)
     terminated_detail_df = df_cohort[df_cohort["Lapsed"] == 1].copy()
-    # Keep the keys we need later (including policy_nbr so we can rejoin to full detail)
     terminated_detail_df = terminated_detail_df[
         [
             "Cohort_Week_Index",
@@ -581,7 +559,6 @@ def perform_cohort_analysis(
             "policy_nbr",
         ]
     ].copy()
-
 
     return (
         retention_rate,
@@ -595,7 +572,9 @@ def perform_cohort_analysis(
     )
 
 
-# --- 3. NEW AGGREGATION AND VISUALIZATION FUNCTIONS (UNCHANGED) ---
+# --- 3. NEW AGGREGATION AND VISUALIZATION FUNCTIONS ---
+
+
 def aggregate_average_months_held(
     df_avg: pd.DataFrame, start_date: pd.Timestamp, end_date: pd.Timestamp
 ) -> pd.DataFrame:
@@ -608,12 +587,10 @@ def aggregate_average_months_held(
     if df_filtered.empty:
         return pd.DataFrame()
 
-    # The aggregation needs to be weighted by Policy Count (Policies)
     df_filtered["Weighted_Months"] = (
         df_filtered["Avg_Months_Held"] * df_filtered["Policies"]
     )
 
-    # Only aggregate by segments (Underwriting Class, Gender, Tobacco)
     summary_df = (
         df_filtered[df_filtered["Segment"] != "Cohort Overall"]
         .groupby(["Segment", "Category"])
@@ -652,7 +629,7 @@ def plot_segment_avg_months(
         title=title,
         text=segment_df["Avg_Months_Held"].round(2).astype(str) + " mos",
         labels={"Avg_Months_Held": "Average Months Held", "Category": segment},
-        color="Policies",  # Use policies as color intensity
+        color="Policies",
         color_continuous_scale=px.colors.sequential.Plasma,
     )
     fig.update_traces(textposition="outside")
@@ -677,7 +654,6 @@ def plot_segment_avg_months_single_cohort(
         st.warning(f"No data to display for {segment} in Cohort {cohort_index}.")
         return
 
-    # Extract overall average for the title
     overall_avg = (
         df_avg[
             (df_avg["Cohort_Index"] == cohort_index)
@@ -741,7 +717,7 @@ def plot_initial_mix_trends(
             "Proportion": "Initial Policy Proportion (%)",
             "Category": segment,
         },
-        groupnorm="percent",  # Stacks to 100%
+        groupnorm="percent",
     )
     fig.update_layout(
         yaxis_range=[0, 100],
@@ -755,11 +731,12 @@ def plot_initial_mix_trends(
     )
 
 
-# --- NEW FUNCTION FOR CONDITIONAL FORMATTING ---
+# --- CONDITIONAL FORMATTING FOR RETENTION MATRIX ---
+
+
 def color_retention_matrix(df: pd.DataFrame):
     """Applies green-to-red conditional formatting to the retention matrix."""
 
-    # Define the custom 10-shade colormap from Green (high retention) to Red (low retention)
     colors = [
         "#f65420",
         "#f1733e",
@@ -774,7 +751,6 @@ def color_retention_matrix(df: pd.DataFrame):
     ]
     cmap = LinearSegmentedColormap.from_list("RedToGreen", colors, N=10)
 
-    # Apply the background gradient
     return (
         df.style.background_gradient(
             cmap=cmap,
@@ -801,7 +777,6 @@ st.markdown(
 
 # --- Initial Data Loading ---
 try:
-    # Compute CSV mtime and pass it to loader so Streamlit cache invalidates when the file changes
     csv_path_for_cache = os.path.join(os.path.dirname(__file__), "randompolicydata.csv")
     csv_mtime = os.path.getmtime(csv_path_for_cache) if os.path.exists(csv_path_for_cache) else None
     with st.spinner("Scanning directory and merging files (This may take a moment)..."):
@@ -826,13 +801,12 @@ try:
     # --- Sidebar for Data Filtering ---
     st.sidebar.header("1. Analysis Configuration")
 
-    # --- MIN DATE CONSTRAINT ---
+    # Min date constraint
     MIN_ALLOWED_DATE = pd.to_datetime("2024-01-01").date()
 
     latest_available_date = initial_df["app_recvd_date"].max()
     data_earliest_date = earliest_date.date()
 
-    # The default should be the earliest available date in the data, but no earlier than MIN_ALLOWED_DATE
     default_cohort_start = max(data_earliest_date, MIN_ALLOWED_DATE)
 
     cohort_start_date_input = st.sidebar.date_input(
@@ -867,17 +841,16 @@ try:
             )
         return []
 
-    # Get ALL unique plan codes from the initially loaded data
+    # Plan options
     all_plan_options = get_unique_values(initial_df, "plan_code")
     luminary_plan_codes = MAPPING_PLAN_CODES
     other_plan_codes = [p for p in all_plan_options if p not in luminary_plan_codes]
 
-    # --- Plan Code Filter Group Selection ---
     st.sidebar.subheader("Filter by Plan Code Group")
     plan_group_selection = st.sidebar.radio(
         "Plan Code Group:",
         ("All", "Luminary", "Other", "Custom Select"),
-        index=0,  # Default to 'All'
+        index=0,
         key="plan_code_group_select",
     )
 
@@ -929,7 +902,7 @@ try:
             "Filter by Gender", options=gender_options, default=gender_options
         )
 
-    # --- Case Status Filter ---
+    # Case status filter
     case_status_options = ["Active", "Inactive"]
     selected_case_status = st.sidebar.multiselect(
         "Filter by Case Status",
@@ -979,9 +952,7 @@ try:
         for index, date in cohort_dates_df["Cohort_Start_Date"].items()
     }
 
-    # ----------------------------------------------------------------------------------
     # --- MAIN CONTENT TABS ---
-    # ----------------------------------------------------------------------------------
     (
         cohort_tab,
         persistency_summary_tab,
@@ -1186,76 +1157,7 @@ try:
             )
             st.markdown("---")
 
-        # TERMINATED POLICY DETAIL TABLE (Simplified to use terminated_detail_df correctly)
-        st.header("📝 Detailed List of Terminated Policies (Reference Data)")
-
-        # 1) Start from terminated_detail_df for this cohort
-        detail_table_df = terminated_detail_df[
-            terminated_detail_df["Cohort_Week_Index"] == selected_cohort_index
-        ].copy()
-
-        if detail_table_df.empty:
-            st.info("No terminated policies found for the selected cohort.")
-        else:
-            # 2) Get full policy details from the original initial_df
-            detail_policy_nrs = detail_table_df["policy_nbr"].unique()
-            full_detail_df = initial_df[
-                initial_df["policy_nbr"].isin(detail_policy_nrs)
-            ].copy()
-
-            # 3) Merge the termination info back onto the full policy detail
-            detail_table_df = full_detail_df.merge(
-                detail_table_df[
-                    ["policy_nbr", "Termination_Reason", "Lapse_Week", "Policy_Month"]
-                ],
-                on="policy_nbr",
-                how="left",
-            )
-
-            # 4) Format dates safely
-            if "term_date" in detail_table_df.columns and pd.api.types.is_datetime64_any_dtype(
-                detail_table_df["term_date"]
-            ):
-                detail_table_df["Terminated_Date"] = (
-                    detail_table_df["term_date"].dt.strftime("%Y-%m-%d").fillna("N/A")
-                )
-            else:
-                detail_table_df["Terminated_Date"] = "N/A"
-
-            if "issue_date" in detail_table_df.columns and pd.api.types.is_datetime64_any_dtype(
-                detail_table_df["issue_date"]
-            ):
-                detail_table_df["Issue_Date"] = (
-                    detail_table_df["issue_date"].dt.strftime("%Y-%m-%d").fillna("N/A")
-                )
-            else:
-                detail_table_df["Issue_Date"] = "N/A"
-
-            # 5) Select display columns
-            display_cols = [
-                "policy_nbr",
-                "Terminated_Date",
-                "Issue_Date",
-                "Lapse_Week",
-                "Termination_Reason",
-                "plan_code",
-                "gender",
-                "tobacco",
-            ]
-            final_display_cols = [
-                col for col in display_cols if col in detail_table_df.columns
-            ]
-
-            st.dataframe(
-                detail_table_df[final_display_cols].set_index("policy_nbr"),
-                use_container_width=True,
-                key="terminated_policies_detail",
-            )
-            st.markdown("---")
-
-
-
-            # --- REFERENCE DATA FOR SINGLE COHORT ---
+            # Reference Data: Active Policy Mix Over Tenure
             st.subheader("Reference Data: Active Policy Mix Over Tenure")
             final_mix_df_display = final_mix_df.copy()
             final_mix_df_display.rename(
@@ -1279,6 +1181,71 @@ try:
             st.info(
                 "No active policies found for the selected cohort or filters to generate the mix chart."
             )
+
+        # TERMINATED POLICY DETAIL TABLE (always available if there are lapsed policies)
+        st.header("📝 Detailed List of Terminated Policies (Reference Data)")
+
+        detail_table_df = terminated_detail_df[
+            terminated_detail_df["Cohort_Week_Index"] == selected_cohort_index
+        ].copy()
+
+        if detail_table_df.empty:
+            st.info("No terminated policies found for the selected cohort.")
+        else:
+            # Get full policy details from the original initial_df
+            detail_policy_nrs = detail_table_df["policy_nbr"].unique()
+            full_detail_df = initial_df[
+                initial_df["policy_nbr"].isin(detail_policy_nrs)
+            ].copy()
+
+            # Merge the termination info back onto the full policy detail
+            detail_table_df = full_detail_df.merge(
+                detail_table_df[
+                    ["policy_nbr", "Termination_Reason", "Lapse_Week", "Policy_Month"]
+                ],
+                on="policy_nbr",
+                how="left",
+            )
+
+            # Format dates safely
+            if "term_date" in detail_table_df.columns and pd.api.types.is_datetime64_any_dtype(
+                detail_table_df["term_date"]
+            ):
+                detail_table_df["Terminated_Date"] = (
+                    detail_table_df["term_date"].dt.strftime("%Y-%m-%d").fillna("N/A")
+                )
+            else:
+                detail_table_df["Terminated_Date"] = "N/A"
+
+            if "issue_date" in detail_table_df.columns and pd.api.types.is_datetime64_any_dtype(
+                detail_table_df["issue_date"]
+            ):
+                detail_table_df["Issue_Date"] = (
+                    detail_table_df["issue_date"].dt.strftime("%Y-%m-%d").fillna("N/A")
+                )
+            else:
+                detail_table_df["Issue_Date"] = "N/A"
+
+            display_cols = [
+                "policy_nbr",
+                "Terminated_Date",
+                "Issue_Date",
+                "Lapse_Week",
+                "Termination_Reason",
+                "plan_code",
+                "gender",
+                "tobacco",
+            ]
+            final_display_cols = [
+                col for col in display_cols if col in detail_table_df.columns
+            ]
+
+            st.dataframe(
+                detail_table_df[final_display_cols].set_index("policy_nbr"),
+                use_container_width=True,
+                key="terminated_policies_detail",
+            )
+            st.markdown("---")
 
     # ----------------------------------------------------------------------------------
     # --- TAB 2: Cohort Persistency Summary ---
@@ -1461,9 +1428,13 @@ try:
 
             st.subheader("Reference Data: Overall Cohort Persistency Summary")
 
-            cohort_summary_table = avg_months_held_df[
-                avg_months_held_df["Segment"] == "Cohort Overall"
-            ].copy().sort_values("Cohort_Index")
+            cohort_summary_table = (
+                avg_months_held_df[
+                    avg_months_held_df["Segment"] == "Cohort Overall"
+                ]
+                .copy()
+                .sort_values("Cohort_Index")
+            )
 
             cohort_summary_table["Cohort"] = (
                 "Cohort "
