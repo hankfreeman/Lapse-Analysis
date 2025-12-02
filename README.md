@@ -1,4 +1,4 @@
-# 🎈 Blank app template
+# 📊 LIFE INSURANCE LAPSE MODELER
 
 A simple Streamlit app template for you to modify!
 
